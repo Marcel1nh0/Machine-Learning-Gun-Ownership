@@ -72,7 +72,7 @@ def treinarMLPs(XTr, yTr):
         pipe = Pipeline([
             ("escala", StandardScaler()),  # padronização (média 0, desvio 1)
             ("mlp", MLPRegressor(hidden_layer_sizes=(64, 32, 16, 8), activation=ativ,
-                                 solver="adam", alpha=0.01, max_iter=1000,
+                                 solver="adam", alpha=0.01, max_iter=10000,
                                  early_stopping=True, validation_fraction=0.15,
                                  n_iter_no_change=30, random_state=42)),
         ])
