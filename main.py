@@ -36,10 +36,19 @@ def separarDados(d):
 
 
 def imputarNulos(XTr, XVa):
-    medianas = XTr[numericas].median()
+    # Preenche os nulos das colunas numéricas com a mediana do grupo de renda (income_group) do país,
+    # calculada SÓ no treino. Se o grupo não tiver nenhum valor, usa a mediana geral do treino.
+    colunasGrupo = [c for c in XTr.columns if c.startswith("income_group_")]
+    grupoTr = XTr[colunasGrupo].idxmax(axis=1)  # recupera o grupo a partir das colunas 0/1
+    grupoVa = XVa[colunasGrupo].idxmax(axis=1)
+    medianasGrupo = XTr[numericas].groupby(grupoTr).median()
+    medianasGeral = XTr[numericas].median()
     XTr = XTr.copy(); XVa = XVa.copy()
-    XTr[numericas] = XTr[numericas].fillna(medianas)
-    XVa[numericas] = XVa[numericas].fillna(medianas)
+    for col in numericas:
+        XTr[col] = XTr[col].fillna(grupoTr.map(medianasGrupo[col]))
+        XVa[col] = XVa[col].fillna(grupoVa.map(medianasGrupo[col]))
+    XTr[numericas] = XTr[numericas].fillna(medianasGeral)
+    XVa[numericas] = XVa[numericas].fillna(medianasGeral)
     return XTr, XVa
 
 
@@ -81,20 +90,79 @@ def mostrarErros(resultados):
         print(np.round(mlp.loss_curve_, 4))
 
 
-def graficos(resultados, yVa, pVaMelhor, nomeMelhor):
-    fig, eixos = plt.subplots(1, 3, figsize=(18, 5))
+def graficos(resultados, yVa, preds, melhor):
+    # Gera 4 figuras (salvas em PNG e exibidas): perda por época, R² de validação interna por época,
+    # comparação das métricas finais entre as funções de ativação e real x previsto de cada ativação.
+    cores = {"relu": "tab:blue", "tanh": "tab:orange", "logistic": "tab:green"}
+    real = np.expm1(yVa)
+
+    # Figura 1: perda de treino por época (vetor de erros) de cada ativação
+    plt.figure(figsize=(8, 5))
     for ativ, modelo in resultados.items():
         mlp = modelo.named_steps["mlp"]
-        eixos[0].plot(mlp.loss_curve_, label=ativ)
-        eixos[1].plot(mlp.validation_scores_, label=ativ)
-    eixos[0].set_title("Perda de treino por época"); eixos[0].set_xlabel("Época"); eixos[0].set_ylabel("Perda"); eixos[0].legend()
-    eixos[1].set_title("R² de validação interna por época"); eixos[1].set_xlabel("Época"); eixos[1].set_ylabel("R²"); eixos[1].legend()
-    real, prev = np.expm1(yVa), np.expm1(pVaMelhor)
-    eixos[2].scatter(real, prev, alpha=0.7)
-    lim = max(real.max(), prev.max())
-    eixos[2].plot([0, lim], [0, lim], "r--")
-    eixos[2].set_title(f"Real x Previsto - MLP {nomeMelhor}"); eixos[2].set_xlabel("Real"); eixos[2].set_ylabel("Previsto")
+        plt.plot(mlp.loss_curve_, label=f"{ativ} ({len(mlp.loss_curve_)} épocas)", color=cores[ativ])
+        melhorEpoca = int(np.argmax(mlp.validation_scores_))  # época em que o early stopping guardou os pesos
+        plt.scatter(melhorEpoca, mlp.loss_curve_[melhorEpoca], color=cores[ativ], zorder=3)
+    plt.title("Perda de treino por época")
+    plt.xlabel("Época")
+    plt.ylabel("Perda (erro quadrático médio / 2, alvo em log)")
+    plt.legend(title="Ativação (ponto = melhor época)")
+    plt.grid(alpha=0.3)
     plt.tight_layout()
+    plt.savefig("figura1_perda.png", dpi=150)
+
+    # Figura 2: R² na validação interna (15% do treino) por época
+    plt.figure(figsize=(8, 5))
+    for ativ, modelo in resultados.items():
+        mlp = modelo.named_steps["mlp"]
+        plt.plot(mlp.validation_scores_, label=ativ, color=cores[ativ])
+        melhorEpoca = int(np.argmax(mlp.validation_scores_))
+        plt.scatter(melhorEpoca, mlp.validation_scores_[melhorEpoca], color=cores[ativ], zorder=3)
+    plt.ylim(-1, 1)  # corta as primeiras épocas, muito negativas, para enxergar o restante
+    plt.axhline(0, color="gray", linewidth=0.8)
+    plt.title("R² na validação interna por época")
+    plt.xlabel("Época")
+    plt.ylabel("R² (alvo em log)")
+    plt.legend(title="Ativação (ponto = melhor época)")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("figura2_r2_validacao_interna.png", dpi=150)
+
+    # Figura 3: comparação das métricas finais (conjunto de validação) entre as ativações
+    nomes = list(preds.keys())
+    r2s = [r2_score(yVa, preds[a]) for a in nomes]
+    maes = [mean_absolute_error(real, np.expm1(preds[a])) for a in nomes]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
+    barras1 = ax1.bar(nomes, r2s, color=[cores[a] for a in nomes])
+    ax1.bar_label(barras1, fmt="%.3f")
+    ax1.axhline(0, color="gray", linewidth=0.8)
+    ax1.set_title("R² na validação")
+    ax1.set_ylabel("R² (alvo em log)")
+    barras2 = ax2.bar(nomes, maes, color=[cores[a] for a in nomes])
+    ax2.bar_label(barras2, fmt="%.2f")
+    ax2.set_title("MAE na validação")
+    ax2.set_ylabel("Homicídios por 100 mil habitantes")
+    for ax in (ax1, ax2):
+        ax.set_xlabel("Função de ativação")
+        ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("figura3_comparacao_ativacoes.png", dpi=150)
+
+    # Figura 4: real x previsto de cada ativação (mesma escala nos três painéis)
+    fig, eixos = plt.subplots(1, 3, figsize=(15, 5), sharex=True, sharey=True)
+    lim = max(real.max(), max(np.expm1(p).max() for p in preds.values())) * 1.05
+    for ax, ativ in zip(eixos, nomes):
+        ax.scatter(real, np.expm1(preds[ativ]), alpha=0.7, color=cores[ativ])
+        ax.plot([0, lim], [0, lim], "r--", label="previsão perfeita")
+        titulo = f"{ativ} (R² = {r2_score(yVa, preds[ativ]):.3f})"
+        ax.set_title(titulo + (" - melhor" if ativ == melhor else ""))
+        ax.set_xlabel("Taxa real (homicídios/100 mil)")
+        ax.grid(alpha=0.3)
+    eixos[0].set_ylabel("Taxa prevista (homicídios/100 mil)")
+    eixos[0].legend()
+    plt.tight_layout()
+    plt.savefig("figura4_real_x_previsto.png", dpi=150)
+
     plt.show()
 
 
@@ -109,7 +177,7 @@ def rodar():
     for ativ, m in mlps.items():
         preds[ativ] = metricas(f"MLP ({ativ})", m, XTr, yTr, XVa, yVa)
     melhor = max(preds, key=lambda a: r2_score(yVa, preds[a]))
-    graficos(mlps, yVa, preds[melhor], melhor)
+    graficos(mlps, yVa, preds, melhor)
 
 
 if __name__ == "__main__":
